@@ -5,13 +5,43 @@ from providers import (
     OpenAIProvider, TogetherProvider, XAIProvider,
     DeepInfraProvider, HyperbolicProvider, FireworksProvider, GoogleProvider
 )
+import logging
+import sys, os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("data/run.log", mode="a"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+for noisy in [
+    "httpx",
+    "urllib3",
+    "openai",
+    "openai.afc",
+    "openai._afc",
+    "AFC",
+    "requests",
+]:
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+logging.getLogger().addFilter(
+    lambda record: "AFC" not in record.getMessage()
+)
+
+
+
 
 OUTPUT_PATH = "data/all_providers_results_parallelized.jsonl"
 MAX_WORKERS = 256
 RESUME = True
-SIZE = 400 
+SIZE = 50000
 
-# --- dataset ---
+# dataset
 ds = load_dataset("cais/mmlu", "all")["auxiliary_train"].to_pandas()
 ds['choices'] = ds['choices'].apply(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
 ds = ds.sample(frac=1, random_state=42).reset_index(drop=True).iloc[:SIZE]
@@ -65,7 +95,7 @@ Explanation/Reasoning: <your explanation/Reasoning>
 Final Answer: 2
 """
 
-# --- resume ---
+# resume from previous runs
 done_ids = set()
 if RESUME:
     try:
@@ -76,16 +106,17 @@ if RESUME:
     except FileNotFoundError:
         pass
 
-# --- worker ---
+# one worker
 def run_task(provider, model, idx, q):
     prompt = USER_PROMPT_TEMPLATE.format(QUESTIONS=q['question'], CHOICES=q['choices'])
     try:
         r = provider.chat(model, "You are a helpful assistant.", prompt)
     except Exception as e:
         r = f"Error: {e}"
+        logging.error(f"Error: {e} with model {model} and index {idx}")
     return idx, model, r
 
-# --- dispatch all jobs ---
+# all jobs
 tasks = []
 for i, row in ds.iterrows():
     if i in done_ids:
@@ -120,10 +151,12 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool, open(OUTPUT_PATH, 'a')
                 fout.write(json.dumps(row) + '\n')
             fout.flush()
             results_buffer.clear()
-            print(f"[{n}/{len(tasks)}] done ({time.time()-start:.1f}s)")
+            msg = f"[{n}/{len(tasks)}] done ({time.time()-start:.1f}s)"
+            logging.info(msg)
 
 # flush final leftovers
 with open(OUTPUT_PATH, 'a') as fout:
     for row in results_buffer.values():
         fout.write(json.dumps(row) + '\n')
-print(f"✅ All done in {time.time()-start:.1f}s")
+msg = f"Done in {time.time()-start:.1f}s"
+logging.info(msg)
